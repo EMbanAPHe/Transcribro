@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "dev.soupslurpr.transcribro"
+    namespace = "dev.embanaphe.transcribro"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "dev.soupslurpr.transcribro"
+        applicationId = "com.embanaphe.transcribro.bridge"
         minSdk = 29
         targetSdk = 36
         versionCode = 7
@@ -58,13 +58,13 @@ android {
         }
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            versionNameSuffix = "-whisperbridge"
             signingConfig = signingConfigs.getByName("debug")
         }
         create("staging") {
             initWith(getByName("release"))
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            versionNameSuffix = "-whisperbridge"
             signingConfig = signingConfigs.getByName("debug")
         }
     }
