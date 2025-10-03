@@ -1,0 +1,12 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@
+ android {
+   defaultConfig {
+-    applicationId "com.soupslurpr.transcribro"
++    // New ID so this variant can install alongside the original Transcribro
++    applicationId "com.embanaphe.transcribro.bridge"
++    // Optional: helps tell builds apart
++    versionNameSuffix "-whisperbridge"
+   }
+ }

@@ -1,0 +1,21 @@
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.soupslurpr.transcribro">
++    <!-- Needed to capture mic when using SpeechRecognizer -->
++    <uses-permission android:name="android.permission.RECORD_AUDIO" />
++
++    <!-- Optional (only if you add explicit package queries) -->
++    <queries>
++        <intent>
++            <action android:name="android.speech.RecognitionService" />
++        </intent>
++    </queries>
+
+     <application
+         android:allowBackup="true"
+         android:supportsRtl="true">
+         ...
+     </application>
+ </manifest>

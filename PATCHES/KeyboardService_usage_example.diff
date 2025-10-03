@@ -1,0 +1,20 @@
+--- a/app/src/main/java/.../KeyboardService.kt
++++ b/app/src/main/java/.../KeyboardService.kt
+@@
+ import com.embanaphe.transcribro.engine.EngineProvider
+@@
+     private fun startDictation() {
+-        // Old: local whisper.cpp path
+-        // whisper.startListening(...)
++        val engine = EngineProvider.current(this)
++        engine.startListening(this, languageTag = "en-AU", preferOffline = true) { text, isFinal ->
++            updateComposing(text) // your existing method to show partial text
++            if (isFinal) commitText(text) // your existing method to insert into the editor
++        }
+     }
+@@
+     private fun stopDictation() {
+-        whisper.stop()
++        val engine = EngineProvider.current(this)
++        engine.stop()
+     }
