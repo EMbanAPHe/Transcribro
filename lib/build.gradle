@@ -5,37 +5,14 @@ plugins {
 
 android {
     namespace 'com.whispercpp'
-    compileSdk 36
+
+    // Use stable SDKs to avoid preview fetch failures in CI.
+    compileSdk 35
 
     defaultConfig {
         minSdk 29
-        targetSdk 36
-
-        ndk {
-            abiFilters 'arm64-v8a', 'x86_64'
-        }
-        externalNativeBuild {
-            cmake {
-                // When set, builds whisper.android against the version located
-                // at GGML_HOME instead of the copy bundled with whisper.cpp.
-                if (
-                        project.hasProperty('GGML_HOME') &&
-                                project.findProperty('GGML_CLBLAST') == 'ON'
-                ) {
-                    // Turning on CLBlast requires GGML_HOME
-                    arguments "-DGGML_HOME=${project.property('GGML_HOME')}",
-                            "-DGGML_CLBLAST=ON",
-                            "-DOPENCL_LIB=${project.property('OPENCL_LIB')}",
-                            "-DCLBLAST_HOME=${project.property('CLBLAST_HOME')}",
-                            "-DOPENCL_ROOT=${project.property('OPENCL_ROOT')}",
-                            "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH",
-                            "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH"
-                } else if (project.hasProperty('GGML_HOME')) {
-                    arguments "-DGGML_HOME=${project.property('GGML_HOME')}"
-                }
-
-            }
-        }
+        targetSdk 35
+        // No NDK config, because we are NOT building whisper.cpp locally.
     }
 
     buildTypes {
@@ -46,19 +23,20 @@ android {
             minifyEnabled false
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // Keeping kotlinOptions is fine; the new compilerOptions DSL is optional here.
     kotlinOptions {
         jvmTarget = "17"
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/jni/whisper/CMakeLists.txt")
-        }
-    }
+    // Remove externalNativeBuild entirely — no CMake, no JNI
+    // (left intentionally empty)
+
     packagingOptions {
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
@@ -67,7 +45,7 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.16.0'
-    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
 }
