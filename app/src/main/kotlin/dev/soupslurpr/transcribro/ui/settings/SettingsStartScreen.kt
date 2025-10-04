@@ -15,6 +15,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -29,6 +31,9 @@ import dev.soupslurpr.transcribro.dataStore
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 
+// NEW: import EngineProvider to read/write the Whisper+ toggle preference.
+import dev.soupslurpr.transcribro.engine.EngineProvider
+
 @Composable
 fun SettingsStartScreen(
     onClickLicense: () -> Unit,
@@ -42,6 +47,7 @@ fun SettingsStartScreen(
     val preferencesUiState by preferencesViewModel.uiState.collectAsState()
 
     val localUriHandler = LocalUriHandler.current
+    val context = LocalContext.current
 
     ScreenLazyColumn(
         modifier = Modifier
@@ -127,6 +133,23 @@ fun SettingsStartScreen(
                 }
             )
         }
+
+        // NEW: Whisper+ system engine toggle (stored via EngineProvider prefs)
+        item {
+            val initial = EngineProvider.isSystemPreferred(context)
+            val useSystem = remember { mutableStateOf(initial) }
+
+            SettingsSwitchItem(
+                name = "Use system speech engine (Whisper+)",
+                description = "Route dictation to the device’s default recognition service",
+                checked = useSystem.value,
+                onCheckedChange = { checked ->
+                    useSystem.value = checked
+                    EngineProvider.setSystemPreferred(context, checked)
+                }
+            )
+        }
+
         item {
             SettingsCategory(
                 stringResource(R.string.about_setting_category)
