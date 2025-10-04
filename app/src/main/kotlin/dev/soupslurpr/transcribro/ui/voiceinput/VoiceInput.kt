@@ -1,6 +1,5 @@
 package dev.soupslurpr.transcribro.ui.voiceinput
 
-import android.content.ComponentName
 import android.content.Intent
 import android.content.res.Configuration.ORIENTATION_PORTRAIT
 import android.inputmethodservice.InputMethodService
@@ -9,10 +8,6 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.SpeechRecognizer.createSpeechRecognizer
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration.getKeyRepeatDelay
@@ -90,7 +85,6 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.dataStore
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
-import dev.soupslurpr.transcribro.recognitionservice.MainRecognitionService
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 import dev.soupslurpr.transcribro.ui.reusablecomposables.longPressableKey
 import dev.soupslurpr.transcribro.ui.theme.TranscribroTheme
@@ -100,12 +94,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
-private var speechRecognizer: MutableState<SpeechRecognizer?> = mutableStateOf(null)
+// NEW: use the engine provider (system = Whisper+, or local if you add one)
+import dev.soupslurpr.transcribro.engine.EngineProvider
 
+// Removed direct SpeechRecognizer fields
 private var isRecognizing by mutableStateOf(false)
-
 private var showInsufficientPermissionsError by mutableStateOf(false)
-
 private var isSpeaking by mutableStateOf(false)
 
 class VoiceInput : InputMethodService() {
@@ -126,9 +120,7 @@ class VoiceInput : InputMethodService() {
             val context = LocalContext.current
 
             val audioManager = context.getSystemService(AudioManager::class.java)
-
             val startedRecognitionMediaPlayer = MediaPlayer.create(context, R.raw.started_recognition)
-
             val stoppedRecognitionMediaPlayer = MediaPlayer.create(context, R.raw.stopped_recognition)
 
             val preferencesViewModel: PreferencesViewModel = viewModel(
@@ -136,20 +128,13 @@ class VoiceInput : InputMethodService() {
             )
 
             val preferencesUiState by preferencesViewModel.uiState.collectAsState()
-
             val acceptedPrivacyPolicyAndLicense = preferencesUiState.acceptedPrivacyPolicyAndLicense.second.value
-
             val autoStopRecognition by preferencesUiState.autoStopRecognition.second
-
             val autoStartRecognition by preferencesUiState.autoStartRecognition.second
 
             val snackbarHostState = remember { SnackbarHostState() }
-
             val snackbarCoroutine = rememberCoroutineScope()
-
-            var snackbarJob: Job? by remember {
-                mutableStateOf(null)
-            }
+            var snackbarJob: Job? by remember { mutableStateOf(null) }
 
             fun cancelSnackbarJobAndLaunch(
                 message: String,
@@ -160,12 +145,143 @@ class VoiceInput : InputMethodService() {
             ) {
                 snackbarJob?.cancel()
                 snackbarJob = snackbarCoroutine.launch {
-                    snackbarHostState.showSnackbar(
-                        message,
-                        actionLabel,
-                        withDismissAction,
-                        duration
-                    )
+                    snackbarHostState.showSnackbar(message, actionLabel, withDismissAction, duration)
+                }
+            }
+
+            // === NEW: helpers for dictation via EngineProvider ===
+
+            fun commitPartialToEditor(transcription: String, ic: InputConnection) {
+                if (transcription.isEmpty()) return
+
+                var textToCommit = if ((ic.getTextBeforeCursor(2, 0) == "") ||
+                    (ic.getTextBeforeCursor(1, 0) == "\n") ||
+                    (ic.getTextBeforeCursor(1, 0) == " ")
+                ) {
+                    transcription.removePrefix(" ")
+                } else transcription
+
+                val selectedText = ic.getSelectedText(0)
+
+                val readdUppercase =
+                    textToCommit.filter { it.isLetter() }.firstOrNull { !it.isUpperCase() } == null
+
+                if (!selectedText.isNullOrEmpty()) {
+                    val removeSuffixPoint =
+                        textToCommit.trim().toList().withIndex().reversed().firstOrNull { it.value.isLetterOrDigit() }
+                    if (removeSuffixPoint != null) {
+                        textToCommit = textToCommit.trim().substring(0..removeSuffixPoint.index)
+                    }
+
+                    val removePrefixPoint =
+                        textToCommit.trim().toList().withIndex().firstOrNull { it.value.isLetterOrDigit() }
+                    if (removePrefixPoint != null) {
+                        textToCommit = textToCommit.trim()
+                            .substring(removePrefixPoint.index..textToCommit.trim().lastIndex)
+                    }
+
+                    val selectedEndOfWordPunctuation =
+                        selectedText.trim().toList().withIndex().reversed().firstOrNull { it.value.isLetterOrDigit() }
+                    val firstSelectedNonWhitespaceCharacter = selectedText.trim().firstOrNull()
+
+                    if (firstSelectedNonWhitespaceCharacter != null) {
+                        textToCommit =
+                            if (textToCommit.firstOrNull { !it.isUpperCase() } == null) {
+                                textToCommit
+                            } else if (firstSelectedNonWhitespaceCharacter.isUpperCase()) {
+                                textToCommit[0].uppercaseChar() + textToCommit.substring(1..textToCommit.lastIndex)
+                            } else if (firstSelectedNonWhitespaceCharacter.isLowerCase()) {
+                                textToCommit[0].lowercaseChar() + textToCommit.substring(1..textToCommit.lastIndex)
+                            } else if (selectedText.firstOrNull { it.isLetterOrDigit() || it.isWhitespace() } == null) {
+                                textToCommit[0].lowercaseChar() + textToCommit.substring(1..textToCommit.lastIndex)
+                            } else {
+                                textToCommit
+                            }
+                    }
+
+                    if (selectedEndOfWordPunctuation != null) {
+                        textToCommit += selectedText.trim()
+                            .substring(selectedEndOfWordPunctuation.index + 1..selectedText.trim().lastIndex)
+                    }
+
+                    if (selectedText.firstOrNull { it.isLetterOrDigit() } == null) {
+                        textToCommit = " $textToCommit"
+                        if (textToCommit.last().isLetterOrDigit()) {
+                            textToCommit = "$textToCommit$selectedText"
+                        }
+                    }
+                } else {
+                    val twoCharactersBeforeCursor = ic.getTextBeforeCursor(2, 0)
+                    val firstLetterOrDigit = textToCommit.withIndex().firstOrNull { it.value.isLetterOrDigit() }
+                    if ((twoCharactersBeforeCursor != null) && (twoCharactersBeforeCursor.firstOrNull { it.isLetterOrDigit() } != null)) {
+                        if (twoCharactersBeforeCursor[0].isLetterOrDigit() &&
+                            (twoCharactersBeforeCursor[1].isLetterOrDigit() || twoCharactersBeforeCursor[1].isWhitespace())
+                        ) {
+                            if (firstLetterOrDigit != null) {
+                                val chars = textToCommit.toCharArray()
+                                chars[firstLetterOrDigit.index] = firstLetterOrDigit.value.lowercaseChar()
+                                textToCommit = chars.concatToString()
+                            }
+                        }
+                    }
+                }
+
+                if (readdUppercase) {
+                    textToCommit = textToCommit.uppercase()
+                }
+
+                ic.commitText(textToCommit, 1)
+            }
+
+            fun startDictation() {
+                if (isRecognizing) return
+                val ic = currentInputConnection ?: return
+
+                isRecognizing = true
+                // play start tone
+                if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                    startedRecognitionMediaPlayer.start()
+                }
+
+                // Mark speaking once we receive the first partial
+                isSpeaking = false
+
+                val engine = EngineProvider.current(this@VoiceInput)
+                engine.startListening(
+                    context = this@VoiceInput,
+                    languageTag = "en-AU",
+                    preferOffline = true
+                ) { text, isFinal ->
+                    // Receive partial/final updates
+                    if (text.isNotEmpty()) {
+                        isSpeaking = true
+                        commitPartialToEditor(text, ic)
+                        if (preferencesUiState.autoSendTranscription.second.value && isFinal) {
+                            ic.performEditorAction(EditorInfo.IME_ACTION_SEND)
+                        }
+                    }
+
+                    if (isFinal) {
+                        isRecognizing = false
+                        isSpeaking = false
+                        if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                            stoppedRecognitionMediaPlayer.start()
+                        }
+                        if (preferencesUiState.autoSwitchToPreviousInputMethod.second.value) {
+                            this@VoiceInput.switchToPreviousInputMethod()
+                        }
+                    }
+                }
+            }
+
+            fun stopDictation() {
+                if (!isRecognizing) return
+                EngineProvider.current(this@VoiceInput).stop()
+                isRecognizing = false
+                isSpeaking = false
+                // play stop tone
+                if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                    stoppedRecognitionMediaPlayer.start()
                 }
             }
 
@@ -182,9 +298,7 @@ class VoiceInput : InputMethodService() {
                         .height(maxHeight)
                 ) {
                     Scaffold(
-                        snackbarHost = {
-                            SnackbarHost(snackbarHostState)
-                        },
+                        snackbarHost = { SnackbarHost(snackbarHostState) },
                     ) { innerPadding ->
                         Box(
                             modifier = Modifier
@@ -201,17 +315,14 @@ class VoiceInput : InputMethodService() {
                                             onClick = {
                                                 startActivity(context.packageManager.getLaunchIntentForPackage(context.packageName))
                                             }
-                                        ) {
-                                            Text("Open Transcribro")
-                                        }
+                                        ) { Text("Open Transcribro") }
                                     }
                                 }
                             } else if (showInsufficientPermissionsError) {
                                 ScreenLazyColumn {
                                     item {
                                         Text(
-                                            "Please grant \"Allow only while using the app\" microphone permission in " +
-                                                    "settings to continue."
+                                            "Please grant \"Allow only while using the app\" microphone permission in settings to continue."
                                         )
                                     }
                                     item {
@@ -221,243 +332,29 @@ class VoiceInput : InputMethodService() {
                                                     Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                                     Uri.fromParts("package", context.packageName, null)
                                                 )
-
                                                 intent.addCategory(Intent.CATEGORY_DEFAULT)
-
                                                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
                                                 startActivity(intent)
-
                                                 showInsufficientPermissionsError = false
                                             }
-                                        ) {
-                                            Text("Open App Settings")
-                                        }
+                                        ) { Text("Open App Settings") }
                                     }
                                 }
                             } else {
+                                // Auto-start if enabled (fires once when the view is composed)
                                 LaunchedEffect(true) {
-                                    if (!isRecognizing) {
-                                        if (speechRecognizer.value == null) {
-                                            speechRecognizer.value = createSpeechRecognizer(
-                                                applicationContext,
-                                                ComponentName(applicationContext, MainRecognitionService::class.java)
-                                            )
-
-                                            speechRecognizer.value!!.setRecognitionListener(object :
-                                                RecognitionListener {
-                                                override fun onReadyForSpeech(params: Bundle?) {
-                                                    isRecognizing = true
-
-                                                    if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
-                                                        startedRecognitionMediaPlayer.start()
-                                                    }
-                                                }
-
-                                                override fun onBeginningOfSpeech() {
-                                                    isSpeaking = true
-                                                }
-
-                                                override fun onRmsChanged(rmsdB: Float) {
-//                TODO("Not yet implemented")
-                                                }
-
-                                                override fun onBufferReceived(buffer: ByteArray?) {
-//                TODO("Not yet implemented")
-                                                }
-
-                                                override fun onEndOfSpeech() {
-                                                    isSpeaking = false
-                                                }
-
-                                                override fun onError(error: Int) {
-                                                    when (error) {
-                                                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                                                            showInsufficientPermissionsError = true
-                                                        }
-
-                                                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY, SpeechRecognizer.ERROR_CLIENT -> {
-                                                            cancelSnackbarJobAndLaunch(
-                                                                "Recognition is finishing, please wait or cancel.",
-                                                                withDismissAction = true,
-                                                                duration = SnackbarDuration.Short
-                                                            )
-                                                        }
-
-                                                        else -> {
-//                                                            println(error)
-                                                        }
-                                                    }
-                                                }
-
-                                                override fun onResults(results: Bundle?) {
-                                                    isRecognizing = false
-
-                                                    if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
-                                                        stoppedRecognitionMediaPlayer.start()
-                                                    }
-
-                                                    if (preferencesUiState.autoSwitchToPreviousInputMethod.second.value) {
-                                                        this@VoiceInput.switchToPreviousInputMethod()
-                                                    }
-                                                }
-
-                                                override fun onPartialResults(partialResults: Bundle?) {
-                                                    currentInputConnection.also { ic: InputConnection ->
-                                                        if (partialResults != null) {
-                                                            val transcription = partialResults.getStringArrayList(
-                                                                SpeechRecognizer.RESULTS_RECOGNITION
-                                                            )?.get(0) ?: ""
-
-                                                            if (transcription.isNotEmpty()) {
-                                                                var textToCommit = if ((ic.getTextBeforeCursor(
-                                                                        2,
-                                                                        0
-                                                                    ) == "") || (ic.getTextBeforeCursor(1, 0) == "\n")
-                                                                    || (ic.getTextBeforeCursor(1, 0) == " ")
-                                                                ) {
-                                                                    transcription.removePrefix(" ")
-                                                                } else {
-                                                                    transcription
-                                                                }
-
-                                                                val selectedText = ic.getSelectedText(0)
-
-                                                                val readdUppercase =
-                                                                    textToCommit.filter { it.isLetter() }.firstOrNull {
-                                                                        !it.isUpperCase()
-                                                                    } == null
-
-                                                                if (!selectedText.isNullOrEmpty()) {
-                                                                    val removeSuffixPoint =
-                                                                        textToCommit.trim().toList().withIndex()
-                                                                            .reversed().firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    if (removeSuffixPoint != null) {
-                                                                        textToCommit = textToCommit.trim()
-                                                                            .substring(0..removeSuffixPoint.index)
-                                                                    }
-
-                                                                    val removePrefixPoint =
-                                                                        textToCommit.trim().toList().withIndex()
-                                                                            .firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    if (removePrefixPoint != null) {
-                                                                        textToCommit = textToCommit.trim()
-                                                                            .substring(removePrefixPoint.index..textToCommit.trim().lastIndex)
-                                                                    }
-
-                                                                    val selectedEndOfWordPunctuation =
-                                                                        selectedText.trim().toList().withIndex()
-                                                                            .reversed().firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    val firstSelectedNonWhitespaceCharacter =
-                                                                        selectedText.trim().firstOrNull()
-
-                                                                    if (firstSelectedNonWhitespaceCharacter != null) {
-                                                                        textToCommit =
-                                                                            if (textToCommit.firstOrNull { !it.isUpperCase() } == null) {
-                                                                                textToCommit
-                                                                            } else if (firstSelectedNonWhitespaceCharacter.isUpperCase()) {
-                                                                                textToCommit[0].uppercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else if (firstSelectedNonWhitespaceCharacter.isLowerCase()) {
-                                                                                textToCommit[0].lowercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else if (selectedText.firstOrNull { it.isLetterOrDigit() || it.isWhitespace() } == null) {
-                                                                                textToCommit[0].lowercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else {
-                                                                                textToCommit
-                                                                            }
-                                                                    }
-
-                                                                    if (selectedEndOfWordPunctuation != null) {
-                                                                        textToCommit += selectedText.trim()
-                                                                            .substring(selectedEndOfWordPunctuation.index + 1..selectedText.trim().lastIndex)
-                                                                    }
-
-                                                                    if (selectedText.firstOrNull { it.isLetterOrDigit() } == null) {
-                                                                        textToCommit = " $textToCommit"
-
-                                                                        if (textToCommit.last().isLetterOrDigit()) {
-                                                                            textToCommit = "$textToCommit$selectedText"
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    val twoCharactersBeforeCursor =
-                                                                        ic.getTextBeforeCursor(2, 0)
-                                                                    val firstLetterOrDigit = textToCommit.withIndex()
-                                                                        .firstOrNull { it.value.isLetterOrDigit() }
-
-                                                                    if ((twoCharactersBeforeCursor != null) && (twoCharactersBeforeCursor.firstOrNull { it.isLetterOrDigit() } != null)) {
-                                                                        if (twoCharactersBeforeCursor[0].isLetterOrDigit() && (twoCharactersBeforeCursor[1].isLetterOrDigit() || twoCharactersBeforeCursor[1].isWhitespace())) {
-                                                                            if (firstLetterOrDigit != null) {
-                                                                                val chars = textToCommit.toCharArray()
-
-                                                                                chars[firstLetterOrDigit.index] =
-                                                                                    firstLetterOrDigit.value.lowercaseChar()
-
-                                                                                textToCommit = chars.concatToString()
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-
-                                                                if (readdUppercase) {
-                                                                    textToCommit = textToCommit.uppercase()
-                                                                }
-
-                                                                ic.commitText(
-                                                                    textToCommit,
-                                                                    1
-                                                                )
-
-                                                                if (preferencesUiState.autoSendTranscription.second.value) {
-                                                                    ic.performEditorAction(EditorInfo.IME_ACTION_SEND)
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                override fun onEvent(eventType: Int, params: Bundle?) {
-//            TODO("Not yet implemented")
-                                                }
-                                            })
-
-                                            if (autoStartRecognition) {
-                                                speechRecognizer.value!!.startListening(
-                                                    getStartListeningIntent(
-                                                        autoStopRecognition
-                                                    )
-                                                )
-                                            }
-                                        }
+                                    if (!isRecognizing && autoStartRecognition) {
+                                        startDictation()
                                     }
                                 }
 
-                                Column(
-                                    Modifier
-                                        .fillMaxSize()
-                                ) {
+                                Column(Modifier.fillMaxSize()) {
                                     Row(
                                         modifier = Modifier.fillMaxSize(),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Column(
-                                            Modifier.weight(1f)
-                                        ) {
+                                        Column(Modifier.weight(1f)) {
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -474,15 +371,10 @@ class VoiceInput : InputMethodService() {
                                                 ) {
                                                     OutlinedIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
-
+                                                            stopDictation()
                                                             val intent = context.packageManager
                                                                 .getLaunchIntentForPackage(context.packageName)!!
-                                                                .apply {
-                                                                    action = (Intent.ACTION_APPLICATION_PREFERENCES)
-                                                                }
-
+                                                                .apply { action = (Intent.ACTION_APPLICATION_PREFERENCES) }
                                                             startActivity(intent)
                                                         },
                                                         modifier = Modifier
@@ -499,8 +391,7 @@ class VoiceInput : InputMethodService() {
                                                     Spacer(modifier = Modifier.size(8.dp))
                                                     FilledTonalIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            stopDictation()
                                                             switchToPreviousInputMethod()
                                                         },
                                                         modifier = Modifier
@@ -517,35 +408,24 @@ class VoiceInput : InputMethodService() {
                                                 }
                                                 Spacer(modifier = Modifier.size(8.dp))
                                                 OutlinedButton(
-                                                    onClick = {
-                                                        if (isRecognizing) {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
-                                                        }
-                                                    },
+                                                    onClick = { if (isRecognizing) stopDictation() },
                                                     modifier = Modifier
                                                         .fillMaxHeight()
                                                         .fillMaxWidth()
                                                         .weight(1f),
                                                     enabled = isRecognizing,
                                                     shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Text(
-                                                        "Cancel Recognition"
-                                                    )
-                                                }
+                                                ) { Text("Cancel Recognition") }
                                             }
+
+                                            // Main mic toggle
                                             FilledIconToggleButton(
                                                 checked = isRecognizing,
                                                 onCheckedChange = {
                                                     if (isRecognizing) {
-                                                        speechRecognizer.value?.stopListening()
+                                                        stopDictation()
                                                     } else {
-                                                        speechRecognizer.value?.startListening(
-                                                            getStartListeningIntent(
-                                                                autoStopRecognition
-                                                            )
-                                                        )
+                                                        startDictation()
                                                     }
                                                 },
                                                 modifier = Modifier
@@ -566,10 +446,11 @@ class VoiceInput : InputMethodService() {
                                                 )
                                             }
                                         }
+
                                         Spacer(modifier = Modifier.size(8.dp))
-                                        Column(
-                                            modifier = Modifier.fillMaxWidth(0.4f)
-                                        ) {
+
+                                        // Right side controls unchanged
+                                        Column(modifier = Modifier.fillMaxWidth(0.4f)) {
                                             Column(
                                                 modifier = Modifier
                                                     .fillMaxHeight()
@@ -579,24 +460,21 @@ class VoiceInput : InputMethodService() {
                                                 FilledTonalButton(
                                                     onClick = {
                                                         val extractedText = currentInputConnection.getExtractedText(
-                                                            ExtractedTextRequest(),
-                                                            0
+                                                            ExtractedTextRequest(), 0
                                                         ).text
                                                         val beforeCursorText =
                                                             currentInputConnection.getTextBeforeCursor(
-                                                                extractedText.length,
-                                                                0
+                                                                extractedText.length, 0
                                                             )
-                                                        val afterCursorText = currentInputConnection.getTextAfterCursor(
-                                                            extractedText.length,
-                                                            0
-                                                        )
+                                                        val afterCursorText =
+                                                            currentInputConnection.getTextAfterCursor(
+                                                                extractedText.length, 0
+                                                            )
 
                                                         if (beforeCursorText != null) {
                                                             if (afterCursorText != null) {
                                                                 currentInputConnection.deleteSurroundingText(
-                                                                    beforeCursorText.length,
-                                                                    afterCursorText.length
+                                                                    beforeCursorText.length, afterCursorText.length
                                                                 )
                                                             }
                                                         }
@@ -606,23 +484,21 @@ class VoiceInput : InputMethodService() {
                                                         .fillMaxWidth()
                                                         .weight(1f),
                                                     shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Text("Clear Unselected")
-                                                }
+                                                ) { Text("Clear Unselected") }
+
                                                 Spacer(modifier = Modifier.size(8.dp))
+
                                                 Row(
                                                     Modifier
                                                         .fillMaxHeight()
                                                         .fillMaxWidth()
                                                         .weight(1f),
                                                 ) {
-                                                    val undoInteractionSource =
-                                                        remember { MutableInteractionSource() }
+                                                    val undoInteractionSource = remember { MutableInteractionSource() }
                                                     FilledTonalIconButton(
                                                         onClick = {
                                                             val downMetaState = KeyEvent.META_CTRL_ON
                                                             val upMetaState = 0
-
                                                             currentInputConnection.sendKeyEvent(
                                                                 KeyEvent(
                                                                     System.currentTimeMillis(),
@@ -652,10 +528,8 @@ class VoiceInput : InputMethodService() {
                                                                 interactionSource = undoInteractionSource,
                                                                 onLongPress = {
                                                                     while (isActive) {
-                                                                        val downMetaState =
-                                                                            KeyEvent.META_CTRL_ON
+                                                                        val downMetaState = KeyEvent.META_CTRL_ON
                                                                         val upMetaState = 0
-
                                                                         currentInputConnection.sendKeyEvent(
                                                                             KeyEvent(
                                                                                 System.currentTimeMillis(),
@@ -689,16 +563,14 @@ class VoiceInput : InputMethodService() {
                                                             modifier = Modifier.fillMaxSize(0.5f)
                                                         )
                                                     }
+
                                                     Spacer(modifier = Modifier.size(8.dp))
 
-                                                    val redoInteractionSource =
-                                                        remember { MutableInteractionSource() }
+                                                    val redoInteractionSource = remember { MutableInteractionSource() }
                                                     FilledTonalIconButton(
                                                         onClick = {
-                                                            val downMetaState =
-                                                                KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+                                                            val downMetaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
                                                             val upMetaState = 0
-
                                                             currentInputConnection.sendKeyEvent(
                                                                 KeyEvent(
                                                                     System.currentTimeMillis(),
@@ -728,11 +600,8 @@ class VoiceInput : InputMethodService() {
                                                                 interactionSource = redoInteractionSource,
                                                                 onLongPress = {
                                                                     while (isActive) {
-                                                                        val downMetaState =
-                                                                            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
-                                                                        val upMetaState =
-                                                                            0
-
+                                                                        val downMetaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+                                                                        val upMetaState = 0
                                                                         currentInputConnection.sendKeyEvent(
                                                                             KeyEvent(
                                                                                 System.currentTimeMillis(),
@@ -768,226 +637,13 @@ class VoiceInput : InputMethodService() {
                                                     }
                                                 }
                                             }
+
                                             Spacer(modifier = Modifier.size(8.dp))
+
                                             Column(
                                                 modifier = Modifier
                                                     .fillMaxHeight()
                                                     .fillMaxWidth()
                                                     .weight(1f)
                                             ) {
-                                                val backspaceInteractionSource =
-                                                    remember { MutableInteractionSource() }
-                                                FilledTonalIconButton(
-                                                    onClick = {
-                                                        val selectedText =
-                                                            currentInputConnection.getSelectedText(0)
-                                                        if (selectedText.isNullOrEmpty()) {
-                                                            currentInputConnection.deleteSurroundingText(1, 0)
-                                                        } else {
-                                                            currentInputConnection.commitText("", 1)
-                                                        }
-                                                    },
-                                                    modifier = Modifier
-                                                        .fillMaxHeight()
-                                                        .fillMaxWidth()
-                                                        .weight(1f)
-                                                        .longPressableKey(
-                                                            interactionSource = backspaceInteractionSource,
-                                                            onLongPress = {
-                                                                while (isActive) {
-                                                                    val selectedText =
-                                                                        currentInputConnection.getSelectedText(0)
-                                                                    if (selectedText.isNullOrEmpty()) {
-                                                                        currentInputConnection.deleteSurroundingText(1, 0)
-                                                                    } else {
-                                                                        currentInputConnection.commitText("", 1)
-                                                                    }
-                                                                    delay(getKeyRepeatDelay().milliseconds)
-                                                                }
-                                                            },
-                                                        ),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    interactionSource = backspaceInteractionSource,
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.AutoMirrored.Outlined.Backspace,
-                                                        contentDescription = "Backspace",
-                                                        modifier = Modifier.fillMaxSize(0.5f)
-                                                    )
-                                                }
-
-                                                Spacer(modifier = Modifier.size(8.dp))
-
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxHeight()
-                                                        .fillMaxWidth()
-                                                        .weight(1f),
-                                                ) {
-                                                    // TODO: why is the actionId seemingly always 0???
-                                                    val (actionKeyIcon, actionKeyContentDescription) = when (currentInputEditorInfo.actionId) {
-                                                        EditorInfo.IME_ACTION_NEXT -> Pair(
-                                                            Icons.AutoMirrored.Outlined.NavigateNext,
-                                                            "Next"
-                                                        )
-
-                                                        EditorInfo.IME_ACTION_GO -> Pair(
-                                                            Icons.AutoMirrored.Outlined.ArrowRightAlt,
-                                                            "Go"
-                                                        )
-
-                                                        EditorInfo.IME_ACTION_SEND -> Pair(
-                                                            Icons.AutoMirrored.Outlined.Send,
-                                                            "Send"
-                                                        )
-
-                                                        EditorInfo.IME_ACTION_DONE -> Pair(Icons.Outlined.Done, "Done")
-                                                        EditorInfo.IME_ACTION_NONE -> Pair(Icons.Outlined.Block, "None")
-                                                        EditorInfo.IME_ACTION_PREVIOUS -> Pair(
-                                                            Icons.AutoMirrored.Outlined.NavigateBefore,
-                                                            "Previous"
-                                                        )
-
-                                                        EditorInfo.IME_ACTION_SEARCH -> Pair(
-                                                            Icons.Outlined.Search,
-                                                            "Search"
-                                                        )
-
-                                                        else -> Pair(Icons.AutoMirrored.Outlined.Send, "Send")
-                                                    }
-
-                                                    FilledTonalIconButton(
-                                                        onClick = {
-                                                            if (actionKeyContentDescription == "Send") {
-                                                                currentInputConnection.performEditorAction(EditorInfo.IME_ACTION_SEND)
-                                                            } else {
-                                                                currentInputConnection.performEditorAction(
-                                                                    currentInputEditorInfo.actionId
-                                                                )
-                                                            }
-                                                        },
-                                                        modifier = Modifier
-                                                            .fillMaxHeight()
-                                                            .fillMaxWidth()
-                                                            .weight(1f),
-                                                        shape = RoundedCornerShape(10.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = actionKeyIcon,
-                                                            contentDescription = actionKeyContentDescription,
-                                                            modifier = Modifier.fillMaxSize(0.5f)
-                                                        )
-                                                    }
-
-                                                    Spacer(modifier = Modifier.size(8.dp))
-
-                                                    FilledTonalIconButton(
-                                                        onClick = {
-                                                            currentInputConnection.sendKeyEvent(
-                                                                KeyEvent(
-                                                                    KeyEvent.ACTION_DOWN,
-                                                                    KeyEvent.KEYCODE_ENTER
-                                                                )
-                                                            )
-                                                            currentInputConnection.sendKeyEvent(
-                                                                KeyEvent(
-                                                                    KeyEvent.ACTION_UP,
-                                                                    KeyEvent.KEYCODE_ENTER
-                                                                )
-                                                            )
-                                                        },
-                                                        modifier = Modifier
-                                                            .fillMaxHeight()
-                                                            .fillMaxWidth()
-                                                            .weight(1f),
-                                                        shape = RoundedCornerShape(10.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.AutoMirrored.Outlined.KeyboardReturn,
-                                                            contentDescription = "Return",
-                                                            modifier = Modifier.fillMaxSize(0.5f)
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return view
-    }
-
-    override fun onStartInputView(editorInfo: EditorInfo?, restarting: Boolean) {
-        voiceInputLifecycleOwner.onResume()
-    }
-
-    override fun onFinishInputView(finishingInput: Boolean) {
-        voiceInputLifecycleOwner.onPause()
-    }
-
-    override fun onFinishInput() {
-        speechRecognizer.value?.cancel()
-        isRecognizing = false
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        voiceInputLifecycleOwner.onDestroy()
-
-        speechRecognizer.value?.cancel()
-        speechRecognizer.value?.destroy()
-        speechRecognizer.value = null
-    }
-
-    private fun getStartListeningIntent(longForm: Boolean): Intent {
-        return Intent().apply {
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(MainRecognitionService.EXTRA_AUTO_STOP, longForm)
-        }
-    }
-}
-
-class VoiceInputLifecycleOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
-    private val lifecycleRegistry: LifecycleRegistry =
-        LifecycleRegistry(this)
-    override val lifecycle: Lifecycle = lifecycleRegistry
-
-    override val viewModelStore: ViewModelStore = ViewModelStore()
-
-    private val savedStateRegistryController =
-        SavedStateRegistryController.create(this)
-    override val savedStateRegistry: SavedStateRegistry =
-        savedStateRegistryController.savedStateRegistry
-
-    fun onCreate() {
-        savedStateRegistryController.performRestore(null)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-    }
-
-    fun onResume() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
-    }
-
-    fun onPause() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-    }
-
-    fun onDestroy() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-        viewModelStore.clear()
-    }
-
-    fun attachToDecorView(decorView: View?) {
-        if (decorView == null) return
-
-        decorView.setViewTreeLifecycleOwner(this)
-        decorView.setViewTreeViewModelStoreOwner(this)
-        decorView.setViewTreeSavedStateRegistryOwner(this)
-    }
-}
+                                                val backspaceInteractionSource = remember { MutableInteractionSource() }
