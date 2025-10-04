@@ -2,14 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Mic permission required for SpeechRecognizer -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Make the app visible to system Speech Recognition services (e.g., Whisper+) -->
     <queries>
         <intent>
-            <action android:name="android.speech.RecognitionListener" />
+            <!-- FIXED: use RecognitionService instead of RecognitionListener -->
+            <action android:name="android.speech.RecognitionService" />
         </intent>
-        <!--    Only android.speech.RecognitionListener should be enough in theory, but for some reason, some apps need android
-        .intent.action.MAIN-->
+
+        <!-- Some OEMs/tools still rely on MAIN visibility; harmless to keep -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
         </intent>
@@ -25,6 +28,9 @@
         android:memtagMode="async"
         android:supportsRtl="true"
         tools:targetApi="34">
+
+        <!-- Your own recognition service (kept as-is).
+             Using Whisper+ as the system engine does not require removing this. -->
         <service
             android:name=".recognitionservice.MainRecognitionService"
             android:exported="true"
@@ -33,13 +39,14 @@
             android:permission="android.permission.RECORD_AUDIO">
             <intent-filter>
                 <action android:name="android.speech.RecognitionService" />
-
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <meta-data
                 android:name="android.speech"
                 android:resource="@xml/recognition_service" />
         </service>
+
+        <!-- Your IME (kept as-is) -->
         <service
             android:name=".ui.voiceinput.VoiceInput"
             android:exported="true"
@@ -58,22 +65,20 @@
             android:theme="@style/Theme.Transcribro">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
-
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
         <activity
             android:name=".ui.action_recognize_speech.ActionRecognizeSpeechActivity"
             android:exported="true"
             android:theme="@style/Theme.FloatingWindow">
             <intent-filter>
                 <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
