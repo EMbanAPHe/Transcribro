@@ -1,0 +1,52 @@
+name: Android CI (Transcribro WhisperBridge)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master, feature/** ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Install Android SDK components
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
+            ndk;27.2.12479018
+
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Build Release (unsigned)
+        run: ./gradlew :app:assembleRelease
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcribro-whisperbridge-debug
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload Release APK (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcribro-whisperbridge-release-unsigned
+          path: app/build/outputs/apk/release/*.apk
