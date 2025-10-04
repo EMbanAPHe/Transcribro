@@ -93,7 +93,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
-import dev.soupslurpr.transcribro.engine.EngineProvider
 
 // NEW: use the engine provider (system = Whisper+, or local if you add one)
 import dev.soupslurpr.transcribro.engine.EngineProvider
