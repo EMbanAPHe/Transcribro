@@ -132,6 +132,20 @@ fun SettingsStartScreen(
             )
         }
         item {
+            val context = LocalContext.current
+            val useSystemState = remember { mutableStateOf(EngineProvider.isSystemPreferred(context)) }
+
+            SettingsSwitchItem(
+                name = "Use system speech engine (Whisper+)",
+                description = "Route dictation through the device’s default recognition service",
+                checked = useSystemState.value,
+                onCheckedChange = { checked ->
+                    useSystemState.value = checked
+                    EngineProvider.setSystemPreferred(context, checked)
+                }
+            )
+        }
+        item {
             SettingsCategory(
                 stringResource(R.string.about_setting_category)
             )
