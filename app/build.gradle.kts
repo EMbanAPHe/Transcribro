@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "dev.soupslurpr.transcribro"
-    compileSdk = 36
-    buildToolsVersion = "36.0.0"
+    compileSdk = 35
+    buildToolsVersion = "35.0.0"
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "dev.soupslurpr.transcribro"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 7
         versionName = versionCode.toString()
 
