@@ -647,3 +647,175 @@ class VoiceInput : InputMethodService() {
                                                     .weight(1f)
                                             ) {
                                                 val backspaceInteractionSource = remember { MutableInteractionSource() }
+                                                FilledTonalIconButton(
+                                                    onClick = {
+                                                        val selectedText = currentInputConnection.getSelectedText(0)
+                                                        if (selectedText.isNullOrEmpty()) {
+                                                            currentInputConnection.deleteSurroundingText(1, 0)
+                                                        } else {
+                                                            currentInputConnection.commitText("", 1)
+                                                        }
+                                                    },
+                                                    modifier = Modifier
+                                                        .fillMaxHeight()
+                                                        .fillMaxWidth()
+                                                        .weight(1f)
+                                                        .longPressableKey(
+                                                            interactionSource = backspaceInteractionSource,
+                                                            onLongPress = {
+                                                                while (isActive) {
+                                                                    val selectedText = currentInputConnection.getSelectedText(0)
+                                                                    if (selectedText.isNullOrEmpty()) {
+                                                                        currentInputConnection.deleteSurroundingText(1, 0)
+                                                                    } else {
+                                                                        currentInputConnection.commitText("", 1)
+                                                                    }
+                                                                    delay(getKeyRepeatDelay().milliseconds)
+                                                                }
+                                                            },
+                                                        ),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    interactionSource = backspaceInteractionSource,
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.AutoMirrored.Outlined.Backspace,
+                                                        contentDescription = "Backspace",
+                                                        modifier = Modifier.fillMaxSize(0.5f)
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.size(8.dp))
+
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxHeight()
+                                                        .fillMaxWidth()
+                                                        .weight(1f),
+                                                ) {
+                                                    val (actionKeyIcon, actionKeyContentDescription) = when (currentInputEditorInfo.actionId) {
+                                                        EditorInfo.IME_ACTION_NEXT -> Pair(Icons.AutoMirrored.Outlined.NavigateNext, "Next")
+                                                        EditorInfo.IME_ACTION_GO -> Pair(Icons.AutoMirrored.Outlined.ArrowRightAlt, "Go")
+                                                        EditorInfo.IME_ACTION_SEND -> Pair(Icons.AutoMirrored.Outlined.Send, "Send")
+                                                        EditorInfo.IME_ACTION_DONE -> Pair(Icons.Outlined.Done, "Done")
+                                                        EditorInfo.IME_ACTION_NONE -> Pair(Icons.Outlined.Block, "None")
+                                                        EditorInfo.IME_ACTION_PREVIOUS -> Pair(Icons.AutoMirrored.Outlined.NavigateBefore, "Previous")
+                                                        EditorInfo.IME_ACTION_SEARCH -> Pair(Icons.Outlined.Search, "Search")
+                                                        else -> Pair(Icons.AutoMirrored.Outlined.Send, "Send")
+                                                    }
+
+                                                    FilledTonalIconButton(
+                                                        onClick = {
+                                                            if (actionKeyContentDescription == "Send") {
+                                                                currentInputConnection.performEditorAction(EditorInfo.IME_ACTION_SEND)
+                                                            } else {
+                                                                currentInputConnection.performEditorAction(currentInputEditorInfo.actionId)
+                                                            }
+                                                        },
+                                                        modifier = Modifier
+                                                            .fillMaxHeight()
+                                                            .fillMaxWidth()
+                                                            .weight(1f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = actionKeyIcon,
+                                                            contentDescription = actionKeyContentDescription,
+                                                            modifier = Modifier.fillMaxSize(0.5f)
+                                                        )
+                                                    }
+
+                                                    Spacer(modifier = Modifier.size(8.dp))
+
+                                                    FilledTonalIconButton(
+                                                        onClick = {
+                                                            currentInputConnection.sendKeyEvent(
+                                                                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
+                                                            )
+                                                            currentInputConnection.sendKeyEvent(
+                                                                KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)
+                                                            )
+                                                        },
+                                                        modifier = Modifier
+                                                            .fillMaxHeight()
+                                                            .fillMaxWidth()
+                                                            .weight(1f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.AutoMirrored.Outlined.KeyboardReturn,
+                                                            contentDescription = "Return",
+                                                            modifier = Modifier.fillMaxSize(0.5f)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return view
+    }
+
+    override fun onStartInputView(editorInfo: EditorInfo?, restarting: Boolean) {
+        voiceInputLifecycleOwner.onResume()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        voiceInputLifecycleOwner.onPause()
+    }
+
+    override fun onFinishInput() {
+        // Stop engine cleanly when input finishes
+        EngineProvider.current(this).stop()
+        isRecognizing = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        voiceInputLifecycleOwner.onDestroy()
+
+        // Stop engine and release
+        EngineProvider.current(this).stop()
+    }
+}
+
+class VoiceInputLifecycleOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
+    private val lifecycleRegistry: LifecycleRegistry = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle = lifecycleRegistry
+
+    override val viewModelStore: ViewModelStore = ViewModelStore()
+
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    override val savedStateRegistry: SavedStateRegistry = savedStateRegistryController.savedStateRegistry
+
+    fun onCreate() {
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+    }
+
+    fun onResume() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+    }
+
+    fun onPause() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+    }
+
+    fun onDestroy() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        viewModelStore.clear()
+    }
+
+    fun attachToDecorView(decorView: View?) {
+        if (decorView == null) return
+        decorView.setViewTreeLifecycleOwner(this)
+        decorView.setViewTreeViewModelStoreOwner(this)
+        decorView.setViewTreeSavedStateRegistryOwner(this)
+    }
+}
