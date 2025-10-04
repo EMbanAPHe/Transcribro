@@ -5,11 +5,12 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <queries>
+        <!-- Discover system recognition services (e.g., Whisper+) -->
         <intent>
-            <action android:name="android.speech.RecognitionListener" />
+            <action android:name="android.speech.RecognitionService" />
         </intent>
-        <!--    Only android.speech.RecognitionListener should be enough in theory, but for some reason, some apps need android
-        .intent.action.MAIN-->
+
+        <!-- Harmless: improves app visibility on some OEMs/tools -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
         </intent>
